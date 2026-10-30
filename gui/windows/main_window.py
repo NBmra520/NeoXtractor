@@ -24,6 +24,13 @@ from gui.windows.about_window import AboutWindow
 from gui.windows.config_manager import ConfigManagerWindow
 from gui.windows.settings_window import SettingsWindow
 from gui.windows.viewer_tab_window import ViewerTabWindow
+from gui.windows.wwise_mapping_window import WwiseMappingWindow
+from id5mapping.wwise import (
+    WwiseEventIndex,
+    apply_bank_labels,
+    expand_banks,
+    mount_archive_banks,
+)
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -344,6 +351,10 @@ class MainWindow(QtWidgets.QMainWindow):
                     lambda v=viewer: self._get_tab_window_for_viewer(v).show(),
                 )
 
+            menu.addSeparator()
+            wwise_mapping = menu.addAction("Wwise Event Mapping...")
+            wwise_mapping.triggered.connect(self.open_wwise_mapping)
+
             return menu
 
         self.menuBar().addMenu(tools_menu())
@@ -358,6 +369,66 @@ class MainWindow(QtWidgets.QMainWindow):
         if viewer not in self._viewer_windows:
             self._viewer_windows[viewer] = ViewerTabWindow(viewer)
         return self._viewer_windows[viewer]
+
+    def _wwise_enabled(self) -> bool:
+        """Identity V special features are only active with the matching config."""
+        return bool(self.config is not None and getattr(self.config, "wwise_event_map", False))
+
+    def _auto_wwise_index(self, archive_file):
+        """Activate the bundled hash index and mount the package's banks."""
+        if not self._wwise_enabled():
+            return None
+        index = WwiseEventIndex()
+        if not index.load_bundled_index():
+            return None
+
+        idx_path = getattr(archive_file, "idx_path", None) or getattr(
+            archive_file, "file_path", None
+        )
+        index.autodetect_thy(idx_path)
+        mount_archive_banks(archive_file, index)
+        self.app.setProperty("wwise_event_index", index)
+        get_logger().info(
+            "Wwise event index auto-enabled: %d names, %d mounted shortIDs, %d md5 entries",
+            len(index.name_by_hash),
+            len(index.short_id_events),
+            len(index.md5_events),
+        )
+        return index
+
+    def open_wwise_mapping(self):
+        """Build a Wwise event index and label the entries of the opened package."""
+        if not self._wwise_enabled():
+            QtWidgets.QMessageBox.information(
+                self,
+                "Identity V mapping",
+                "Select the \"Identity V\" config in Active Config to use this feature.",
+            )
+            return
+        archive_file = self.app.property("npk_file")
+        idx_path = getattr(archive_file, "idx_path", None) or getattr(
+            archive_file, "file_path", None
+        )
+
+        dialog = WwiseMappingWindow(self, idx_path=idx_path, archive_file=archive_file)
+        if (
+            dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted
+            or dialog.index is None
+        ):
+            return
+
+        self.app.setProperty("wwise_event_index", dialog.index)
+        if archive_file is not None:
+            apply_bank_labels(archive_file, dialog.index)
+        NPKFileModel._file_names_cache.clear()
+        self.list_widget.refresh_npk_file()
+        self.filter.apply_filter()
+
+        get_logger().info(
+            "Wwise event mapping active: %d events, %d package entries labelled.",
+            len(dialog.index.events),
+            len(dialog.index.md5_events),
+        )
 
     def get_tab_windows(self) -> list[ViewerTabWindow]:
         """Get all viewer tab windows."""
@@ -396,6 +467,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.setWindowTitle("NeoXtractor")
         self.app.setProperty("npk_file", None)
+        self.app.setProperty("wwise_event_index", None)
+        NPKFileModel._file_names_cache.clear()
         self.list_widget.refresh_npk_file()
         self.extract_button_widget.setVisible(False)
         self.preview_widget.clear()
@@ -457,6 +530,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.unload_npk()
 
             self.app.setProperty("game_config", self.config)
+            if not self._wwise_enabled():
+                self.app.setProperty("wwise_event_index", None)
+                NPKFileModel._file_names_cache.clear()
 
             get_logger().info(
                 "Config changed to: %s", self.config.name if self.config else "None"
@@ -489,7 +565,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if ext in (".npk", ".expk"):
             archive_file = NPKFile(path, read_options)
         elif ext in (".idx", ".wpk"):
-            archive_file = IDXWPKFile(path, read_options)
+            archive_file = IDXWPKFile(
+                path, read_options, merge_counterpart=self._wwise_enabled()
+            )
         else:
             raise ValueError(f"Unsupported archive type: {path}")
 
@@ -543,6 +621,20 @@ class MainWindow(QtWidgets.QMainWindow):
             self.unload_npk()
         else:
             archive_file = self.app.property("npk_file")
+
+            if archive_file is not None and self._wwise_enabled():
+                wwise_index = self.app.property("wwise_event_index")
+                if wwise_index is None:
+                    wwise_index = self._auto_wwise_index(archive_file)
+                expanded = expand_banks(archive_file, wwise_index)
+                renamed = (
+                    apply_bank_labels(archive_file, wwise_index)
+                    if wwise_index is not None
+                    else 0
+                )
+                if expanded or renamed:
+                    NPKFileModel._file_names_cache.clear()
+                    self.list_widget.refresh_npk_file()
 
             if archive_file is not None and hasattr(archive_file, "get_load_error_summary"):
                 summary = archive_file.get_load_error_summary()

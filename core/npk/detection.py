@@ -44,10 +44,12 @@ def _get_binary_ext(data: bytes, flags: NPKEntryDataFlags):
     if data[1:4] == b"KTX":
         return "ktx"
     if data[:4] == b"RIFF":
+        # A RIFF/WAVE container is a Wwise media file; any "FEV" bytes inside
+        # are just compressed audio data, not an FMOD event header.
+        if data[8:12] == b"WAVE":
+            return "wem"
         if b"FEV" in data:
             return "fev"
-        if b"WAVE" in data:
-            return "wem"
     if data[0x34:0x3B] == b"2.1.0.0" or data[:8] == bytes(
         [0x38, 0x00, 0x00, 0x00, 0x34, 0x00, 0x64, 0x00]
     ):
