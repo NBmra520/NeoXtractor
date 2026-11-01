@@ -12,15 +12,13 @@ Runtime pipeline (all data comes from the user's own installation):
 
 from __future__ import annotations
 
-import gzip
-import json
 import os
 
 from core.logger import get_logger
 
 from .bank_scan import HIRC_EVENT, scan_bank_dir
 from .hashes import xxh32
-from .index_builder import INDEX_FORMAT, bundled_index_path
+from .index_builder import bundled_index_path, load_index_events
 from .thy import guess_thy_path, load_thy_keys
 
 VFS_KEY_SEED = 163
@@ -78,24 +76,14 @@ class WwiseEventIndex:
     # ---------------------------------------------------------------- loading
 
     def load_hash_index(self, path: str) -> int:
-        """Load the distributable event hash index (plain or gzip'ed JSON)."""
+        """Load the distributable event hash index (binary or JSON)."""
         path = os.path.abspath(path)
-        opener = gzip.open if path.lower().endswith(".gz") else open
-        with opener(path, "rt", encoding="utf-8") as handle:
-            data = json.load(handle)
+        events = load_index_events(path)
 
-        if not isinstance(data, dict) or data.get("format") != INDEX_FORMAT:
-            raise ValueError(f"Not a {INDEX_FORMAT} file: {path}")
-
-        self.name_by_hash = {}
+        self.name_by_hash = dict(events)
         self.events = {}
-        for raw_hash, name in data.get("events", {}).items():
-            try:
-                key = int(raw_hash)
-            except (TypeError, ValueError):
-                continue
-            self.name_by_hash[key] = str(name)
-            self.events[str(name)] = None
+        for name in events.values():
+            self.events[name] = None
 
         get_logger().info(
             "Wwise event hash index: %d names from %s", len(self.name_by_hash), path

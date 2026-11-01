@@ -72,10 +72,12 @@ class Id5PathMappingWindow(QtWidgets.QDialog):
 
         self.index_path = QtWidgets.QLineEdit(bundled_index_path() or "")
         self.index_path.setPlaceholderText(
-            "Bundled hash index (id5mapping/wwise/wwise_event_hash_index.json)"
+            "Bundled hash index (id5mapping/wwise/wwise_event_hash_index.bin)"
         )
         self.index_row = self._with_browse(
-            self.index_path, "Open event hash index", "Index (*.json *.gz);;All Files (*)"
+            self.index_path,
+            "Open event hash index",
+            "Index (*.bin *.json *.gz);;All Files (*)",
         )
         self.index_label = QtWidgets.QLabel("Event hash index")
         form.addRow(self.index_label, self.index_row)
@@ -233,10 +235,10 @@ class Id5PathMappingWindow(QtWidgets.QDialog):
             return
 
         default_out = os.path.join(
-            get_application_path(), "id5mapping", "wwise", "wwise_event_hash_index.json"
+            get_application_path(), "id5mapping", "wwise", "wwise_event_hash_index.bin"
         )
         out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Save event hash index", default_out, "JSON (*.json *.json.gz)"
+            self, "Save event hash index", default_out, "Index (*.bin *.json *.gz);;All Files (*)"
         )
         if not out_path:
             return

@@ -56,9 +56,12 @@ This is a special Identity V mode: it only runs when the **Identity V** config
 is selected in **Active Config**. All of its code and the bundled hash index
 live in `id5mapping/wwise/`.
 
-The bundled hash index (`id5mapping/wwise/wwise_event_hash_index.json`) stores only
+The bundled hash index (`id5mapping/wwise/wwise_event_hash_index.bin`) stores only
 `FNV-1(event name) -> event name`, which is exactly how Wwise ids its event
-objects. When a package is loaded the tool:
+objects. It is a compact binary (magic `NXWE`, zlib-compressed sorted hash table
+plus a shared name pool) and about four times smaller than the old JSON.
+
+When a package is loaded the tool:
 
 1. overlays the base and hot-update IDX files (`<root>/res` + `<root>/Documents/res`,
    hot rows win on identical md5) so one listing covers both,
@@ -76,7 +79,7 @@ If a game update adds event names, rebuild the index from the event name list
 (**Rebuild index...** in the dialog, or the CLI):
 
 ```bash
-python -m id5mapping.wwise.index_builder --events wwise_audio_length_ex.py --out id5mapping/wwise/wwise_event_hash_index.json
+python -m id5mapping.wwise.index_builder --events wwise_audio_length_ex.py --out id5mapping/wwise/wwise_event_hash_index.bin
 ```
 
 ### CLI
