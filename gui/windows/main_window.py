@@ -40,6 +40,7 @@ class MainWindow(QtWidgets.QMainWindow):
     """Main window class."""
 
     _loading_cancelled = False
+    _loading_in_progress = False
 
     # Custom signals for thread-safe UI updates
     update_progress_signal = QtCore.Signal(int)
@@ -430,6 +431,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 "Open an IDX package first.",
             )
             return
+        if self._loading_in_progress:
+            QtWidgets.QMessageBox.information(
+                self,
+                "ID5 Path Mapping",
+                "Wait for the package to finish loading, then open this dialog.",
+            )
+            return
 
         dialog = Id5PathMappingWindow(self, idx_path=idx_path, archive_file=archive_file)
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
@@ -437,6 +445,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if dialog.index is not None:
             self.app.setProperty("wwise_event_index", dialog.index)
+            if is_wwise_archive(idx_path):
+                expand_banks(archive_file, dialog.index)
             apply_bank_labels(archive_file, dialog.index)
 
         NPKFileModel._file_names_cache.clear()
@@ -487,6 +497,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setWindowTitle("NeoXtractor")
         self.app.setProperty("npk_file", None)
         self.app.setProperty("wwise_event_index", None)
+        self._loading_in_progress = False
         NPKFileModel._file_names_cache.clear()
         self.list_widget.refresh_npk_file()
         self.extract_button_widget.setVisible(False)
@@ -565,6 +576,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.unload_npk()
 
         self._loading_cancelled = False
+        self._loading_in_progress = True
 
         self.setWindowTitle(f"NeoXtractor - {os.path.basename(path)}")
 
@@ -633,6 +645,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _loading_complete(self):
         """Handle completion of loading from the signal."""
+        self._loading_in_progress = False
         # Restore normal selection behavior and style when loading is complete
         self.list_widget.setDisabled(False)
         self.open_file_action.setEnabled(True)
@@ -651,9 +664,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 and self._wwise_enabled()
                 and is_wwise_archive(getattr(archive_file, "idx_path", None))
             ):
-                wwise_index = self.app.property("wwise_event_index")
-                if wwise_index is None:
-                    wwise_index = self._auto_wwise_index(archive_file)
+                # Rebuild the index from the fully loaded package: an index
+                # built while the entries were still loading only sees part of
+                # the banks, which would leave most media unnamed.
+                wwise_index = self._auto_wwise_index(archive_file)
                 expanded = expand_banks(archive_file, wwise_index)
                 renamed = (
                     apply_bank_labels(archive_file, wwise_index)
