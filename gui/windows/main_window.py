@@ -24,7 +24,10 @@ from gui.windows.about_window import AboutWindow
 from gui.windows.config_manager import ConfigManagerWindow
 from gui.windows.settings_window import SettingsWindow
 from gui.windows.viewer_tab_window import ViewerTabWindow
-from gui.windows.wwise_mapping_window import WwiseMappingWindow
+from gui.windows.id5_path_mapping_window import (
+    Id5PathMappingWindow,
+    is_wwise_archive,
+)
 from id5mapping.wwise import (
     WwiseEventIndex,
     apply_bank_labels,
@@ -352,8 +355,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
 
             menu.addSeparator()
-            wwise_mapping = menu.addAction("Wwise Event Mapping...")
-            wwise_mapping.triggered.connect(self.open_wwise_mapping)
+            id5_mapping = menu.addAction("ID5 Path Mapping...")
+            id5_mapping.setStatusTip(
+                "Identity V only: restore vfs paths from the two .thy name tables "
+                "(and label Wwise events for wwise.idx)."
+            )
+            id5_mapping.setEnabled(self._wwise_enabled())
+            id5_mapping.triggered.connect(self.open_id5_path_mapping)
+            self.id5_mapping_action = id5_mapping
 
             return menu
 
@@ -374,17 +383,23 @@ class MainWindow(QtWidgets.QMainWindow):
         """Identity V special features are only active with the matching config."""
         return bool(self.config is not None and getattr(self.config, "wwise_event_map", False))
 
+    def _update_mapping_action(self) -> None:
+        """Keep the Tools entry in sync with the selected config."""
+        action = getattr(self, "id5_mapping_action", None)
+        if action is not None:
+            action.setEnabled(self._wwise_enabled())
+
     def _auto_wwise_index(self, archive_file):
-        """Activate the bundled hash index and mount the package's banks."""
+        """Activate the bundled hash index and mount the wwise package's banks."""
         if not self._wwise_enabled():
+            return None
+        idx_path = getattr(archive_file, "idx_path", None)
+        if not is_wwise_archive(idx_path):
             return None
         index = WwiseEventIndex()
         if not index.load_bundled_index():
             return None
 
-        idx_path = getattr(archive_file, "idx_path", None) or getattr(
-            archive_file, "file_path", None
-        )
         index.autodetect_thy(idx_path)
         mount_archive_banks(archive_file, index)
         self.app.setProperty("wwise_event_index", index)
@@ -396,38 +411,42 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         return index
 
-    def open_wwise_mapping(self):
-        """Build a Wwise event index and label the entries of the opened package."""
+    def open_id5_path_mapping(self):
+        """Apply the ID5 name tables to the opened package."""
         if not self._wwise_enabled():
             QtWidgets.QMessageBox.information(
                 self,
-                "Identity V mapping",
+                "ID5 Path Mapping",
                 "Select the \"Identity V\" config in Active Config to use this feature.",
             )
             return
-        archive_file = self.app.property("npk_file")
-        idx_path = getattr(archive_file, "idx_path", None) or getattr(
-            archive_file, "file_path", None
-        )
 
-        dialog = WwiseMappingWindow(self, idx_path=idx_path, archive_file=archive_file)
-        if (
-            dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted
-            or dialog.index is None
-        ):
+        archive_file = self.app.property("npk_file")
+        idx_path = getattr(archive_file, "idx_path", None)
+        if archive_file is None or not idx_path:
+            QtWidgets.QMessageBox.information(
+                self,
+                "ID5 Path Mapping",
+                "Open an IDX package first.",
+            )
             return
 
-        self.app.setProperty("wwise_event_index", dialog.index)
-        if archive_file is not None:
+        dialog = Id5PathMappingWindow(self, idx_path=idx_path, archive_file=archive_file)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        if dialog.index is not None:
+            self.app.setProperty("wwise_event_index", dialog.index)
             apply_bank_labels(archive_file, dialog.index)
+
         NPKFileModel._file_names_cache.clear()
         self.list_widget.refresh_npk_file()
         self.filter.apply_filter()
 
         get_logger().info(
-            "Wwise event mapping active: %d events, %d package entries labelled.",
-            len(dialog.index.events),
-            len(dialog.index.md5_events),
+            "ID5 path mapping applied: %d entries restored, %d events labelled.",
+            dialog.restored,
+            len(dialog.index.events) if dialog.index else 0,
         )
 
     def get_tab_windows(self) -> list[ViewerTabWindow]:
@@ -538,6 +557,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 "Config changed to: %s", self.config.name if self.config else "None"
             )
 
+        self._update_mapping_action()
+
     def load_npk(self, path: str):
         """Load an NPK file and populate the list widget."""
 
@@ -566,7 +587,10 @@ class MainWindow(QtWidgets.QMainWindow):
             archive_file = NPKFile(path, read_options)
         elif ext in (".idx", ".wpk"):
             archive_file = IDXWPKFile(
-                path, read_options, merge_counterpart=self._wwise_enabled()
+                path,
+                read_options,
+                merge_counterpart=self._wwise_enabled(),
+                restore_paths=self._wwise_enabled(),
             )
         else:
             raise ValueError(f"Unsupported archive type: {path}")
@@ -622,7 +646,11 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             archive_file = self.app.property("npk_file")
 
-            if archive_file is not None and self._wwise_enabled():
+            if (
+                archive_file is not None
+                and self._wwise_enabled()
+                and is_wwise_archive(getattr(archive_file, "idx_path", None))
+            ):
                 wwise_index = self.app.property("wwise_event_index")
                 if wwise_index is None:
                     wwise_index = self._auto_wwise_index(archive_file)

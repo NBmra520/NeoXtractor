@@ -16,6 +16,7 @@ from core.npk.class_types import (
 )
 from core.npk.detection import get_ext, get_file_category, is_binary
 from core.wpk.decryption import try_decode_payload_stage1
+from id5mapping.paths import restore_archive_paths
 
 from .constants import (
     EMBEDDED_MAGIC,
@@ -93,10 +94,12 @@ class IDXWPKFile:
         file_path: str,
         options: NPKReadOptions | None = None,
         merge_counterpart: bool = False,
+        restore_paths: bool = False,
     ):
         self.file_path = file_path
         self.options = options if options is not None else NPKReadOptions()
         self.merge_counterpart = merge_counterpart
+        self.restore_paths = restore_paths
 
         self.entries: Dict[int, NPKEntry] = {}
         self.indices: List[NPKIndex] = []
@@ -141,6 +144,19 @@ class IDXWPKFile:
                 self._scan_wpk_indices(file)
         else:
             raise ValueError(f"Unsupported IDX/WPK file type: {file_path}")
+
+        if self.mode == "idx" and self.restore_paths:
+            restore_archive_paths(self)
+
+    def apply_path_mapping(self, thy_paths: list[str] | None = None) -> int:
+        """Re-run path restoration with the given `.thy` tables (base first)."""
+        if self.mode != "idx":
+            return 0
+        restored = restore_archive_paths(self, thy_paths)
+        for index, entry in self.entries.items():
+            if index < len(self.indices):
+                entry.filename = self.indices[index].filename
+        return restored
 
     def __enter__(self):
         return self

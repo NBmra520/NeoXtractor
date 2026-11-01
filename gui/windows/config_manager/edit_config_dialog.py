@@ -70,7 +70,7 @@ class EditConfigDialog(QDialog):
 
         # Identity V special mode
         self.wwise_check = QCheckBox(
-            "Identity V special mode (dual IDX merge, bank expansion, Wwise event names)"
+            "Identity V special mode (dual IDX merge, path restore, bank expansion, Wwise event names)"
         )
         self.wwise_check.setChecked(bool(config.wwise_event_map))
         self.form_layout.addRow("", self.wwise_check)

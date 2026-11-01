@@ -1,4 +1,9 @@
-"""Dialog that wires the Wwise event hash index onto the opened package."""
+"""ID5 path mapping dialog: the two `.thy` name tables of a package.
+
+Non-Wwise packages use them to restore the original vfs path of every IDX
+entry. `wwise.idx` uses the same tables to resolve Wwise event / media names
+and mounts the banks of the package; that part is disabled for other packages.
+"""
 
 from __future__ import annotations
 
@@ -19,14 +24,18 @@ from id5mapping.wwise import (
 from id5mapping.wwise.event_index import _thy_pair_from_thy
 from id5mapping.wwise.thy import guess_thy_path
 
+THY_FILTER = "Name tables (*.thy);;All Files (*)"
 
-class WwiseMappingWindow(QtWidgets.QDialog):
-    """Pick the event hash index / .thy and mount the banks of the package.
 
-    The index only maps `FNV-1(event name) -> name`. Which events exist, which
-    media they use and where those media live is read from the banks inside the
-    loaded package and from the local `.thy` + `.idx`.
-    """
+def is_wwise_archive(idx_path: str | None) -> bool:
+    """Return True for `wwise.idx` — the only package using Wwise mapping."""
+    if not idx_path:
+        return False
+    return os.path.splitext(os.path.basename(idx_path))[0].lower() == "wwise"
+
+
+class Id5PathMappingWindow(QtWidgets.QDialog):
+    """Pick the base / hot-update name tables and apply the ID5 mapping."""
 
     def __init__(
         self,
@@ -36,34 +45,57 @@ class WwiseMappingWindow(QtWidgets.QDialog):
     ):
         super().__init__(parent)
 
-        self.setWindowTitle("Wwise Event Mapping")
+        self.setWindowTitle("ID5 Path Mapping")
         self.resize(760, 300)
 
         self.index: WwiseEventIndex | None = None
+        self.restored = 0
         self.idx_path = idx_path
         self.archive_file = archive_file
+        self.is_wwise = is_wwise_archive(idx_path)
 
         layout = QtWidgets.QVBoxLayout(self)
         form = QtWidgets.QFormLayout()
 
-        bundled = bundled_index_path()
-        self.index_path = QtWidgets.QLineEdit(bundled or "")
+        self.scope = QtWidgets.QLabel()
+        self.scope.setWordWrap(True)
+        if self.is_wwise:
+            self.scope.setText(
+                "Package: wwise.idx — event / media naming from the two name tables."
+            )
+        else:
+            self.scope.setText(
+                "Package: %s — original vfs paths restored from the two name tables."
+                % (os.path.basename(idx_path) if idx_path else "none")
+            )
+        layout.addWidget(self.scope)
+
+        self.index_path = QtWidgets.QLineEdit(bundled_index_path() or "")
         self.index_path.setPlaceholderText(
             "Bundled hash index (id5mapping/wwise/wwise_event_hash_index.json)"
         )
-        form.addRow("Event hash index", self._with_browse(self.index_path, "Open event hash index"))
+        self.index_row = self._with_browse(
+            self.index_path, "Open event hash index", "Index (*.json *.gz);;All Files (*)"
+        )
+        self.index_label = QtWidgets.QLabel("Event hash index")
+        form.addRow(self.index_label, self.index_row)
 
         self.thy_base = QtWidgets.QLineEdit()
         self.thy_base.setPlaceholderText(
             "base name table, optional (e.g. <root>/thd/wwise.thy)"
         )
-        form.addRow("Name table (base)", self._with_browse(self.thy_base, "Open .thy"))
+        form.addRow(
+            "Name table (base)", self._with_browse(self.thy_base, "Open .thy", THY_FILTER)
+        )
 
         self.thy_hot = QtWidgets.QLineEdit()
         self.thy_hot.setPlaceholderText(
             "hot-update name table, optional (e.g. <root>/Documents/thd/wwise.thy)"
         )
-        form.addRow("Name table (hot update)", self._with_browse(self.thy_hot, "Open .thy"))
+        form.addRow(
+            "Name table (hot update)",
+            self._with_browse(self.thy_hot, "Open .thy", THY_FILTER),
+        )
 
         guessed = guess_thy_path(idx_path or "")
         if guessed:
@@ -74,7 +106,7 @@ class WwiseMappingWindow(QtWidgets.QDialog):
 
         layout.addLayout(form)
 
-        self.status = QtWidgets.QLabel("No mapping built.")
+        self.status = QtWidgets.QLabel("No mapping applied.")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
 
@@ -82,18 +114,28 @@ class WwiseMappingWindow(QtWidgets.QDialog):
             QtWidgets.QDialogButtonBox.StandardButton.Ok
             | QtWidgets.QDialogButtonBox.StandardButton.Cancel
         )
-        build_button = buttons.addButton("Reload", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole)
-        build_button.clicked.connect(self.build_mapping)
-        events_button = buttons.addButton("Rebuild index...", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole)
-        events_button.clicked.connect(self.rebuild_index)
+        reload_button = buttons.addButton(
+            "Reload", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+        )
+        reload_button.clicked.connect(self.reload_mapping)
+        self.rebuild_button = buttons.addButton(
+            "Rebuild index...", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+        )
+        self.rebuild_button.clicked.connect(self.rebuild_index)
         buttons.accepted.connect(self.apply)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-        if bundled:
-            self.build_mapping()
+        # Wwise mapping only applies to wwise.idx.
+        for widget in (self.index_label, self.index_row, self.rebuild_button):
+            widget.setVisible(self.is_wwise)
 
-    def _with_browse(self, line_edit: QtWidgets.QLineEdit, title: str) -> QtWidgets.QWidget:
+        if self.is_wwise and bundled_index_path():
+            self.reload_mapping()
+
+    def _with_browse(
+        self, line_edit: QtWidgets.QLineEdit, title: str, file_filter: str
+    ) -> QtWidgets.QWidget:
         container = QtWidgets.QWidget()
         row = QtWidgets.QHBoxLayout(container)
         row.setContentsMargins(0, 0, 0, 0)
@@ -103,7 +145,7 @@ class WwiseMappingWindow(QtWidgets.QDialog):
 
         def browse():
             path, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self, title, "", "Supported Files (*.py *.json *.gz *.thy);;All Files (*)"
+                self, title, "", file_filter
             )
             if path:
                 line_edit.setText(path)
@@ -112,7 +154,39 @@ class WwiseMappingWindow(QtWidgets.QDialog):
         row.addWidget(button)
         return container
 
-    def build_mapping(self) -> bool:
+    def _selected_thy_paths(self) -> list[str]:
+        return [
+            path
+            for path in (self.thy_base.text().strip(), self.thy_hot.text().strip())
+            if path
+        ]
+
+    def reload_mapping(self) -> bool:
+        """Apply the name tables to the opened package."""
+        if self.is_wwise:
+            return self.build_wwise_mapping()
+        return self.apply_path_restore()
+
+    def apply_path_restore(self) -> bool:
+        """Name the IDX entries from the selected name tables."""
+        if self.archive_file is None:
+            self._error("Open an IDX package first.")
+            return False
+        try:
+            thy_paths = self._selected_thy_paths() or None
+            self.restored = self.archive_file.apply_path_mapping(thy_paths)
+        except Exception as error:  # noqa: BLE001
+            get_logger().exception("ID5 path restore failed")
+            self._error(f"Failed to restore paths: {error}")
+            return False
+
+        self.status.setText(
+            f"Restored {self.restored}/{self.archive_file.file_count} entry paths from "
+            f"{len(thy_paths or [])} name table(s)."
+        )
+        return True
+
+    def build_wwise_mapping(self) -> bool:
         """Load the hash index, mount the package banks and report coverage."""
         index = WwiseEventIndex()
         try:
@@ -180,13 +254,13 @@ class WwiseMappingWindow(QtWidgets.QDialog):
         self.status.setText(
             f"Hash index written to {out_path}: {index['stats']['events']} events."
         )
-        self.build_mapping()
+        self.build_wwise_mapping()
 
     def apply(self) -> None:
-        if self.index is None and not self.build_mapping():
+        if not self.reload_mapping():
             return
         self.accept()
 
     def _error(self, message: str) -> None:
-        QtWidgets.QMessageBox.critical(self, "Wwise Event Mapping", message)
+        QtWidgets.QMessageBox.critical(self, "ID5 Path Mapping", message)
         self.status.setText(message)
