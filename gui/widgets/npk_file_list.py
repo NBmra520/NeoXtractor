@@ -276,6 +276,21 @@ class NPKFileList(QtWidgets.QListView):
         """Whether the export setting asks for transcoded audio for this entry."""
         return decoded and is_audio_entry(filename) and get_export_target() != "origin"
 
+    def _video_output(self, entry: NPKEntry, filename: str, decoded: bool):
+        """Return the configured video export for a ``.nbs`` entry, or None to keep it."""
+        if not decoded or not filename.lower().endswith(".nbs"):
+            return None
+        target = get_nbs_export_target()
+        if target == "origin":
+            return None
+        try:
+            video = parse_nbs(entry.get_export_data(decoded=True))
+        except Exception:  # noqa: BLE001
+            # Fall back to the original archive when the container is unreadable.
+            return None
+        content = to_mkv(video) if target == "mkv" else to_ivf(video)
+        return os.path.splitext(filename)[0] + "." + target, content
+
     def _audio_outputs(self, entry: NPKEntry, filename: str, decoded: bool):
         """Return transcoded audio files when the export setting asks for them."""
         target = get_export_target()
@@ -391,6 +406,29 @@ class NPKFileList(QtWidgets.QListView):
                         )
                     return
 
+            video_output = self._video_output(entry, relative, decoded)
+            if video_output is not None:
+                dir_path = QtWidgets.QFileDialog.getExistingDirectory(
+                    self,
+                    "Select Directory to Extract Video",
+                    "",
+                    QtWidgets.QFileDialog.Option.ShowDirsOnly,
+                )
+                if not dir_path:
+                    return
+                try:
+                    self._write_outputs(dir_path, [video_output])
+                    QtWidgets.QMessageBox.information(
+                        self,
+                        "Success",
+                        f"File extracted to {os.path.join(dir_path, video_output[0])}",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    QtWidgets.QMessageBox.critical(
+                        self, "Error", f"Failed to extract file: {str(e)}"
+                    )
+                return
+
             if os.path.dirname(relative):
                 # Restored path: keep the original directory tree under a chosen folder.
                 dir_path = QtWidgets.QFileDialog.getExistingDirectory(
@@ -462,8 +500,13 @@ class NPKFileList(QtWidgets.QListView):
                                 self._write_outputs(dir_path, outputs)
                                 success_count += len(outputs)
                             else:
-                                self._write_entry(entry, file_path, decoded)
-                                success_count += 1
+                                video_output = self._video_output(entry, relative, decoded)
+                                if video_output is not None:
+                                    self._write_outputs(dir_path, [video_output])
+                                    success_count += 1
+                                else:
+                                    self._write_entry(entry, file_path, decoded)
+                                    success_count += 1
                         except Exception:
                             fail_count += 1
 
